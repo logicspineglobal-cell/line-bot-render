@@ -44,11 +44,86 @@ def reply_message(reply_token: str, text: str):
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
         print(f"[LINE REPLY] status={response.status_code}")
         print(f"[LINE REPLY] body={response.text}")
     except Exception as e:
         print(f"[LINE REPLY ERROR] {e}")
+
+
+def translate_text(text: str, target_lang: str) -> str:
+    """
+    Google Translate API (API dịch Google)
+    target_lang examples: zh-TW, vi, id
+    """
+    if not GOOGLE_API_KEY:
+        return "[LỖI] Thiếu GOOGLE_API_KEY"
+
+    url = "https://translation.googleapis.com/language/translate/v2"
+    params = {"key": GOOGLE_API_KEY}
+    payload = {
+        "q": text,
+        "target": target_lang,
+        "format": "text",
+    }
+
+    try:
+        response = requests.post(url, params=params, data=payload, timeout=20)
+        print(f"[TRANSLATE] status={response.status_code}")
+        print(f"[TRANSLATE] body={response.text}")
+
+        if response.status_code != 200:
+            return f"[LỖI DỊCH] HTTP {response.status_code}"
+
+        data = response.json()
+        translated = (
+            data.get("data", {})
+                .get("translations", [{}])[0]
+                .get("translatedText")
+        )
+
+        if not translated:
+            return "[LỖI DỊCH] Không có dữ liệu trả về"
+
+        return translated
+
+    except Exception as e:
+        print(f"[TRANSLATE ERROR] {e}")
+        return f"[LỖI DỊCH] {str(e)}"
+
+
+def handle_translate_command(user_text: str) -> str:
+    """
+    Cú pháp:
+    /zh nội dung
+    /vi nội dung
+    /id nội dung
+    """
+    text = user_text.strip()
+
+    if text.startswith("/zh "):
+        source_text = text[4:].strip()
+        if not source_text:
+            return "Cú pháp đúng: /zh nội dung"
+        translated = translate_text(source_text, "zh-TW")
+        return f"[VI → ZH-TW]\n{translated}"
+
+    if text.startswith("/vi "):
+        source_text = text[4:].strip()
+        if not source_text:
+            return "Cú pháp đúng: /vi nội dung"
+        translated = translate_text(source_text, "vi")
+        return f"[AUTO → VI]\n{translated}"
+
+    if text.startswith("/id "):
+        source_text = text[4:].strip()
+        if not source_text:
+            return "Cú pháp đúng: /id nội dung"
+        translated = translate_text(source_text, "id")
+        return f"[AUTO → ID]\n{translated}"
+
+    return ""
+
 
 # =========================
 # ROUTES
@@ -56,6 +131,7 @@ def reply_message(reply_token: str, text: str):
 @app.route("/", methods=["GET"])
 def home():
     return "LINE BOT RENDER OK", 200
+
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -65,6 +141,7 @@ def health():
         "google_api_key_exists": bool(GOOGLE_API_KEY),
         "google_sheet_id_exists": bool(GOOGLE_SHEET_ID),
     }), 200
+
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -81,9 +158,7 @@ def webhook():
             return "No events", 200
 
         for event in events:
-            event_type = event.get("type")
-
-            if event_type != "message":
+            if event.get("type") != "message":
                 continue
 
             message = event.get("message", {})
@@ -101,15 +176,28 @@ def webhook():
                 reply_message(reply_token, "Tôi đã nhận được tin nhắn trống.")
                 continue
 
-            # Bản tối thiểu để xác nhận deploy sống:
-            reply_text = f"BOT OK: {user_text}"
-            reply_message(reply_token, reply_text)
+            # TẦNG A: TRANSLATE CORE (LÕI DỊCH)
+            translated_result = handle_translate_command(user_text)
+            if translated_result:
+                reply_message(reply_token, translated_result)
+                continue
+
+            # fallback tối thiểu
+            reply_message(
+                reply_token,
+                "BOT OK\n"
+                "Dùng lệnh:\n"
+                "/zh xin chào\n"
+                "/vi 你好\n"
+                "/id xin chào"
+            )
 
         return "OK", 200
 
     except Exception as e:
         print(f"[WEBHOOK ERROR] {e}")
         return "Internal Server Error", 500
+
 
 # =========================
 # ENTRYPOINT
