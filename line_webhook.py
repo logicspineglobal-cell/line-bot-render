@@ -102,24 +102,24 @@ def handle_translate_command(user_text: str) -> str:
     text = user_text.strip()
 
     # /zh xin chào
-    if text.startswith("/zh "):
-        source_text = text[4:].strip()
+    if text.startswith("/zh"):
+    source_text = text.replace("/zh", "", 1).strip()
         if not source_text:
             return "Cú pháp đúng: /zh nội dung"
         translated = translate_text(source_text, "zh-TW")
         return f"[VI → ZH-TW]\n{translated}"
 
     # /vi 你好
-    if text.startswith("/vi "):
-        source_text = text[4:].strip()
+   if text.startswith("/zh"):
+    source_text = text.replace("/zh", "", 1).strip()
         if not source_text:
             return "Cú pháp đúng: /vi nội dung"
         translated = translate_text(source_text, "vi")
         return f"[AUTO → VI]\n{translated}"
 
     # /id chào bạn
-    if text.startswith("/id "):
-        source_text = text[4:].strip()
+    if text.startswith("/zh"):
+    source_text = text.replace("/zh", "", 1).strip()
         if not source_text:
             return "Cú pháp đúng: /id nội dung"
         translated = translate_text(source_text, "id")
