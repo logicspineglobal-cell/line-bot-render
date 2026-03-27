@@ -103,29 +103,35 @@ def handle_translate_command(user_text: str) -> str:
 
     # /zh xin chào
     if text.startswith("/zh"):
-    source_text = text.replace("/zh", "", 1).strip()
+        source_text = text.replace("/zh", "", 1).strip()
         if not source_text:
             return "Cú pháp đúng: /zh nội dung"
         translated = translate_text(source_text, "zh-TW")
         return f"[VI → ZH-TW]\n{translated}"
 
     # /vi 你好
-   if text.startswith("/zh"):
-    source_text = text.replace("/zh", "", 1).strip()
+    if text.startswith("/vi"):
+        source_text = text.replace("/vi", "", 1).strip()
         if not source_text:
             return "Cú pháp đúng: /vi nội dung"
         translated = translate_text(source_text, "vi")
         return f"[AUTO → VI]\n{translated}"
 
     # /id chào bạn
-    if text.startswith("/zh"):
-    source_text = text.replace("/zh", "", 1).strip()
+    if text.startswith("/id"):
+        source_text = text.replace("/id", "", 1).strip()
         if not source_text:
             return "Cú pháp đúng: /id nội dung"
         translated = translate_text(source_text, "id")
         return f"[AUTO → ID]\n{translated}"
 
-    return ""
+    # =========================
+    # AUTO DETECT FALLBACK
+    # Nếu không có lệnh /zh /vi /id
+    # thì tự dịch sang tiếng Việt
+    # =========================
+    translated = translate_text(text, "vi")
+    return f"[AUTO → VI]\n{translated}"
 
 
 # =========================
@@ -185,23 +191,9 @@ def webhook():
                 reply_message(reply_token, "Tôi đã nhận được tin nhắn trống.")
                 continue
 
-            # Translate command layer
-            translated_result = handle_translate_command(user_text)
-            if translated_result:
-                print(f"[COMMAND MATCHED] reply={translated_result}")
-                reply_message(reply_token, translated_result)
-                continue
-
-            # Fallback
-            fallback_text = (
-                "BOT OK\n"
-                "Dùng lệnh:\n"
-                "/zh xin chào\n"
-                "/vi 你好\n"
-                "/id chào bạn"
-            )
-            print("[FALLBACK] No command matched")
-            reply_message(reply_token, fallback_text)
+            reply_text = handle_translate_command(user_text)
+            print(f"[FINAL REPLY] {reply_text}")
+            reply_message(reply_token, reply_text)
 
         return "OK", 200
 
