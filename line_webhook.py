@@ -115,7 +115,7 @@ def handle_translate_command(user_text: str) -> str:
         if not source_text:
             return "Cú pháp đúng: /vi nội dung"
         translated = translate_text(source_text, "vi")
-        return f"[AUTO → VI]\n{translated}"
+        return f"[ZH → VI]\n{translated}"
 
     # /id chào bạn
     if text.startswith("/id"):
@@ -123,7 +123,7 @@ def handle_translate_command(user_text: str) -> str:
         if not source_text:
             return "Cú pháp đúng: /id nội dung"
         translated = translate_text(source_text, "id")
-        return f"[AUTO → ID]\n{translated}"
+        return f"[VI → ID]\n{translated}"
 
     # =========================
     # AUTO DETECT FALLBACK
