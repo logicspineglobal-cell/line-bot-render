@@ -20,10 +20,11 @@ print(f"[BOOT] LINE_CHANNEL_ACCESS_TOKEN exists: {bool(LINE_CHANNEL_ACCESS_TOKEN
 print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
 print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
 
+
 # =========================
-# HELPERS
+# LINE REPLY
 # =========================
-def reply_message(reply_token: str, text: str):
+def reply_message(reply_token: str, text: str) -> None:
     if not LINE_CHANNEL_ACCESS_TOKEN:
         print("[ERROR] LINE_CHANNEL_ACCESS_TOKEN is missing")
         return
@@ -51,39 +52,41 @@ def reply_message(reply_token: str, text: str):
         print(f"[LINE REPLY ERROR] {e}")
 
 
+# =========================
+# GOOGLE TRANSLATE
+# =========================
 def translate_text(text: str, target_lang: str) -> str:
-    """
-    Google Translate API (API dịch Google)
-    target_lang examples: zh-TW, vi, id
-    """
     if not GOOGLE_API_KEY:
         return "[LỖI] Thiếu GOOGLE_API_KEY"
 
+    if not text.strip():
+        return "[LỖI] Nội dung trống"
+
     url = "https://translation.googleapis.com/language/translate/v2"
     params = {"key": GOOGLE_API_KEY}
-    payload = {
+    data = {
         "q": text,
         "target": target_lang,
         "format": "text",
     }
 
     try:
-        response = requests.post(url, params=params, data=payload, timeout=20)
+        response = requests.post(url, params=params, data=data, timeout=20)
         print(f"[TRANSLATE] status={response.status_code}")
         print(f"[TRANSLATE] body={response.text}")
 
         if response.status_code != 200:
             return f"[LỖI DỊCH] HTTP {response.status_code}"
 
-        data = response.json()
+        result = response.json()
         translated = (
-            data.get("data", {})
-                .get("translations", [{}])[0]
-                .get("translatedText")
+            result.get("data", {})
+            .get("translations", [{}])[0]
+            .get("translatedText", "")
         )
 
         if not translated:
-            return "[LỖI DỊCH] Không có dữ liệu trả về"
+            return "[LỖI DỊCH] Không có translatedText"
 
         return translated
 
@@ -92,15 +95,13 @@ def translate_text(text: str, target_lang: str) -> str:
         return f"[LỖI DỊCH] {str(e)}"
 
 
+# =========================
+# COMMAND PARSER
+# =========================
 def handle_translate_command(user_text: str) -> str:
-    """
-    Cú pháp:
-    /zh nội dung
-    /vi nội dung
-    /id nội dung
-    """
     text = user_text.strip()
 
+    # /zh xin chào
     if text.startswith("/zh "):
         source_text = text[4:].strip()
         if not source_text:
@@ -108,6 +109,7 @@ def handle_translate_command(user_text: str) -> str:
         translated = translate_text(source_text, "zh-TW")
         return f"[VI → ZH-TW]\n{translated}"
 
+    # /vi 你好
     if text.startswith("/vi "):
         source_text = text[4:].strip()
         if not source_text:
@@ -115,6 +117,7 @@ def handle_translate_command(user_text: str) -> str:
         translated = translate_text(source_text, "vi")
         return f"[AUTO → VI]\n{translated}"
 
+    # /id chào bạn
     if text.startswith("/id "):
         source_text = text[4:].strip()
         if not source_text:
@@ -158,15 +161,21 @@ def webhook():
             return "No events", 200
 
         for event in events:
+            print(f"[EVENT] {json.dumps(event, ensure_ascii=False)}")
+
             if event.get("type") != "message":
+                print("[SKIP] event type is not message")
                 continue
 
             message = event.get("message", {})
             if message.get("type") != "text":
+                print("[SKIP] message type is not text")
                 continue
 
             reply_token = event.get("replyToken")
             user_text = message.get("text", "").strip()
+
+            print(f"[MESSAGE] user_text={user_text}")
 
             if not reply_token:
                 print("[WARN] Missing replyToken")
@@ -176,21 +185,23 @@ def webhook():
                 reply_message(reply_token, "Tôi đã nhận được tin nhắn trống.")
                 continue
 
-            # TẦNG A: TRANSLATE CORE (LÕI DỊCH)
+            # Translate command layer
             translated_result = handle_translate_command(user_text)
             if translated_result:
+                print(f"[COMMAND MATCHED] reply={translated_result}")
                 reply_message(reply_token, translated_result)
                 continue
 
-            # fallback tối thiểu
-            reply_message(
-                reply_token,
+            # Fallback
+            fallback_text = (
                 "BOT OK\n"
                 "Dùng lệnh:\n"
                 "/zh xin chào\n"
                 "/vi 你好\n"
-                "/id xin chào"
+                "/id chào bạn"
             )
+            print("[FALLBACK] No command matched")
+            reply_message(reply_token, fallback_text)
 
         return "OK", 200
 
