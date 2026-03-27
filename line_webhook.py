@@ -16,7 +16,7 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")  # giữ lại để dùng sau nếu cần
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")  # giữ để dùng sau
 
 # =========================
 # BOOT LOGS
@@ -27,16 +27,20 @@ print(f"[BOOT] LINE_CHANNEL_SECRET exists: {bool(LINE_CHANNEL_SECRET)}")
 print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
 print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
 
-
 # =========================
 # CONFIG
 # =========================
 DEFAULT_AUTO_TARGET = "vi"
+
 SUPPORTED_COMMANDS = {
     "/zh": "zh-TW",
     "/vi": "vi",
     "/id": "id",
 }
+
+# In-memory mapping (bộ nhớ tạm)
+# Lưu ý: restart service sẽ mất dữ liệu này
+USER_LANG_MAP = {}
 
 
 # =========================
@@ -69,7 +73,7 @@ def verify_line_signature(raw_body: str, signature: str) -> bool:
 
 def reply_message(reply_token: str, text: str) -> bool:
     """
-    Reply to LINE (phản hồi LINE)
+    Reply message (phản hồi tin nhắn)
     """
     if not LINE_CHANNEL_ACCESS_TOKEN:
         print("[LINE REPLY ERROR] Missing LINE_CHANNEL_ACCESS_TOKEN")
@@ -85,7 +89,7 @@ def reply_message(reply_token: str, text: str) -> bool:
         "messages": [
             {
                 "type": "text",
-                "text": text[:5000]  # guard chiều dài
+                "text": text[:5000]
             }
         ]
     }
@@ -94,7 +98,6 @@ def reply_message(reply_token: str, text: str) -> bool:
         response = requests.post(url, headers=headers, json=payload, timeout=20)
         print(f"[LINE REPLY] status={response.status_code}")
         print(f"[LINE REPLY] body={response.text}")
-
         return response.status_code == 200
 
     except Exception as e:
@@ -104,8 +107,7 @@ def reply_message(reply_token: str, text: str) -> bool:
 
 def detect_language(text: str) -> str:
     """
-    Detect language (nhận diện ngôn ngữ) bằng Google Translate API detect
-    Trả về mã ngôn ngữ như: vi / zh-TW / zh-CN / id / en ...
+    Detect language (nhận diện ngôn ngữ)
     """
     if not GOOGLE_API_KEY:
         print("[DETECT ERROR] Missing GOOGLE_API_KEY")
@@ -125,6 +127,7 @@ def detect_language(text: str) -> str:
 
         data = response.json()
         detections = data.get("data", {}).get("detections", [])
+
         if not detections or not detections[0]:
             return "unknown"
 
@@ -178,8 +181,13 @@ def translate_text(text: str, target_lang: str) -> str:
 
 def detect_source_label(lang_code: str) -> str:
     """
-    Map source label (gắn nhãn ngôn ngữ nguồn)
+    Map source language label (gắn nhãn ngôn ngữ nguồn)
     """
+    if not lang_code:
+        return "AUTO"
+
+    lang_code = lang_code.lower()
+
     if lang_code.startswith("zh"):
         return "ZH"
     if lang_code == "vi":
@@ -190,51 +198,31 @@ def detect_source_label(lang_code: str) -> str:
         return "EN"
     if lang_code == "unknown":
         return "AUTO"
+
     return lang_code.upper()
 
 
-def handle_translate_command(user_text: str) -> str:
+def normalize_target_lang(lang: str) -> str:
     """
-    Command mode (chế độ lệnh):
-    /zh nội dung
-    /vi nội dung
-    /id nội dung
+    Normalize language code (chuẩn hóa mã ngôn ngữ)
     """
-    text = user_text.strip()
-    if not text:
-        return ""
+    lang = (lang or "").strip()
 
-    for cmd, target_lang in SUPPORTED_COMMANDS.items():
-        prefix = f"{cmd} "
-        if text.startswith(prefix):
-            source_text = text[len(prefix):].strip()
-            if not source_text:
-                return f"Cú pháp đúng: {cmd} nội dung"
+    mapping = {
+        "zh": "zh-TW",
+        "zh-tw": "zh-TW",
+        "tw": "zh-TW",
+        "vi": "vi",
+        "id": "id",
+        "en": "en",
+    }
 
-            source_lang = detect_language(source_text)
-            translated = translate_text(source_text, target_lang)
-            source_label = detect_source_label(source_lang)
-
-            return f"[{source_label} → {target_lang.upper()}]\n{translated}"
-
-    return ""
-
-
-def handle_auto_translate(user_text: str) -> str:
-    """
-    Auto mode (chế độ tự động):
-    Không có lệnh -> dịch về DEFAULT_AUTO_TARGET
-    """
-    source_lang = detect_language(user_text)
-    translated = translate_text(user_text, DEFAULT_AUTO_TARGET)
-    source_label = detect_source_label(source_lang)
-
-    return f"[{source_label} → {DEFAULT_AUTO_TARGET.upper()}]\n{translated}"
+    return mapping.get(lang.lower(), "")
 
 
 def extract_event_context(event: dict) -> dict:
     """
-    Extract context (rút ngữ cảnh)
+    Extract event context (rút ngữ cảnh event)
     """
     source = event.get("source", {}) or {}
     message = event.get("message", {}) or {}
@@ -250,6 +238,89 @@ def extract_event_context(event: dict) -> dict:
         "message_id": message.get("id"),
         "text": message.get("text", ""),
     }
+
+
+def handle_lang_command(user_id: str, user_text: str) -> str:
+    """
+    /lang vi
+    /lang zh
+    /lang id
+    /lang en
+    """
+    text = (user_text or "").strip()
+    parts = text.split()
+
+    if len(parts) != 2 or parts[0].lower() != "/lang":
+        return ""
+
+    if not user_id:
+        return "Không xác định được user_id để lưu ngôn ngữ."
+
+    target = normalize_target_lang(parts[1])
+    if not target:
+        return "Ngôn ngữ không hợp lệ. Dùng: /lang vi | /lang zh | /lang id | /lang en"
+
+    USER_LANG_MAP[user_id] = target
+    print(f"[LANG MAP] set user_id={user_id} target={target}")
+
+    return f"Đã lưu ngôn ngữ đích của bạn = {target}"
+
+
+def handle_show_lang_command(user_id: str, user_text: str) -> str:
+    """
+    /mylang
+    """
+    text = (user_text or "").strip().lower()
+    if text != "/mylang":
+        return ""
+
+    if not user_id:
+        return "Không xác định được user_id."
+
+    current = USER_LANG_MAP.get(user_id, DEFAULT_AUTO_TARGET)
+    return f"Ngôn ngữ đích hiện tại của bạn = {current}"
+
+
+def handle_translate_command(user_text: str) -> str:
+    """
+    Command mode (chế độ lệnh)
+    /zh xin chào
+    /vi 你好
+    /id chào bạn
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return ""
+
+    for cmd, target_lang in SUPPORTED_COMMANDS.items():
+        prefix = f"{cmd} "
+        if text.startswith(prefix):
+            source_text = text[len(prefix):].strip()
+
+            if not source_text:
+                return f"Cú pháp đúng: {cmd} nội dung"
+
+            source_lang = detect_language(source_text)
+            translated = translate_text(source_text, target_lang)
+            source_label = detect_source_label(source_lang)
+
+            return f"[{source_label} → {target_lang.upper()}]\n{translated}"
+
+    return ""
+
+
+def handle_auto_translate(user_id: str, user_text: str) -> str:
+    """
+    Auto mode (chế độ tự động)
+    Không có lệnh -> dịch theo ngôn ngữ đích của user
+    """
+    target_lang = USER_LANG_MAP.get(user_id, DEFAULT_AUTO_TARGET)
+
+    source_lang = detect_language(user_text)
+    translated = translate_text(user_text, target_lang)
+    source_label = detect_source_label(source_lang)
+
+    return f"[{source_label} → {target_lang.upper()}]\n{translated}"
 
 
 # =========================
@@ -269,6 +340,7 @@ def health():
         "google_api_key_exists": bool(GOOGLE_API_KEY),
         "google_sheet_id_exists": bool(GOOGLE_SHEET_ID),
         "default_auto_target": DEFAULT_AUTO_TARGET,
+        "user_lang_map_count": len(USER_LANG_MAP),
     }), 200
 
 
@@ -281,7 +353,6 @@ def webhook():
         print("[WEBHOOK RAW BODY]", raw_body)
         print(f"[WEBHOOK HEADER] x_line_signature_exists={bool(signature)}")
 
-        # Production security check
         if not verify_line_signature(raw_body, signature):
             return "Invalid signature", 403
 
@@ -308,6 +379,7 @@ def webhook():
                 continue
 
             reply_token = event.get("replyToken")
+            user_id = ctx["user_id"]
             user_text = (ctx["text"] or "").strip()
 
             if not reply_token:
@@ -320,17 +392,30 @@ def webhook():
 
             print(f"[MESSAGE] source_type={ctx['source_type']}")
             print(f"[MESSAGE] group_id={ctx['group_id']}")
-            print(f"[MESSAGE] user_text={user_text}")
+            print(f"[MESSAGE] user_id={ctx['user_id']}")
+            print(f"[MESSAGE] text={user_text}")
 
-            # ƯU TIÊN CHẾ ĐỘ LỆNH
-            command_result = handle_translate_command(user_text)
-            if command_result:
-                reply_message(reply_token, command_result)
+            # 1) /lang
+            result = handle_lang_command(user_id, user_text)
+            if result:
+                reply_message(reply_token, result)
                 continue
 
-            # AUTO TRANSLATE
-            auto_result = handle_auto_translate(user_text)
-            reply_message(reply_token, auto_result)
+            # 2) /mylang
+            result = handle_show_lang_command(user_id, user_text)
+            if result:
+                reply_message(reply_token, result)
+                continue
+
+            # 3) command translate
+            result = handle_translate_command(user_text)
+            if result:
+                reply_message(reply_token, result)
+                continue
+
+            # 4) auto translate
+            result = handle_auto_translate(user_id, user_text)
+            reply_message(reply_token, result)
 
         return "OK", 200
 
