@@ -16,7 +16,7 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")  # giữ để dùng sau
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")  # giữ lại để dùng sau nếu cần
 
 # =========================
 # BOOT LOGS
@@ -38,8 +38,8 @@ SUPPORTED_COMMANDS = {
     "/id": "id",
 }
 
-# In-memory mapping (bộ nhớ tạm)
-# Lưu ý: restart service sẽ mất dữ liệu này
+# In-memory map (bộ nhớ tạm)
+# restart service -> mất dữ liệu
 USER_LANG_MAP = {}
 
 
@@ -240,7 +240,29 @@ def extract_event_context(event: dict) -> dict:
     }
 
 
-def handle_lang_command(user_id: str, user_text: str) -> str:
+def build_actor_key(ctx: dict) -> str:
+    """
+    Build actor key (tạo khóa định danh)
+    Ưu tiên:
+    1. user_id
+    2. group_id
+    3. room_id
+    """
+    user_id = ctx.get("user_id")
+    group_id = ctx.get("group_id")
+    room_id = ctx.get("room_id")
+
+    if user_id:
+        return f"user:{user_id}"
+    if group_id:
+        return f"group:{group_id}"
+    if room_id:
+        return f"room:{room_id}"
+
+    return ""
+
+
+def handle_lang_command(actor_key: str, user_text: str) -> str:
     """
     /lang vi
     /lang zh
@@ -250,23 +272,35 @@ def handle_lang_command(user_id: str, user_text: str) -> str:
     text = (user_text or "").strip()
     parts = text.split()
 
-    if len(parts) != 2 or parts[0].lower() != "/lang":
+    print(f"[LANG CMD] raw_text={text}")
+    print(f"[LANG CMD] parts={parts}")
+    print(f"[LANG CMD] actor_key={actor_key}")
+
+    if len(parts) != 2:
+        print("[LANG CMD] skip_invalid_parts")
         return ""
 
-    if not user_id:
-        return "Không xác định được user_id để lưu ngôn ngữ."
+    if parts[0].lower() != "/lang":
+        print("[LANG CMD] skip_not_lang_command")
+        return ""
+
+    if not actor_key:
+        print("[LANG CMD] missing_actor_key")
+        return "Không xác định được khóa người dùng / nhóm để lưu ngôn ngữ."
 
     target = normalize_target_lang(parts[1])
+    print(f"[LANG CMD] normalized_target={target}")
+
     if not target:
         return "Ngôn ngữ không hợp lệ. Dùng: /lang vi | /lang zh | /lang id | /lang en"
 
-    USER_LANG_MAP[user_id] = target
-    print(f"[LANG MAP] set user_id={user_id} target={target}")
+    USER_LANG_MAP[actor_key] = target
+    print(f"[LANG MAP] set actor_key={actor_key} target={target}")
 
-    return f"Đã lưu ngôn ngữ đích của bạn = {target}"
+    return f"Đã lưu ngôn ngữ đích = {target}"
 
 
-def handle_show_lang_command(user_id: str, user_text: str) -> str:
+def handle_show_lang_command(actor_key: str, user_text: str) -> str:
     """
     /mylang
     """
@@ -274,11 +308,11 @@ def handle_show_lang_command(user_id: str, user_text: str) -> str:
     if text != "/mylang":
         return ""
 
-    if not user_id:
-        return "Không xác định được user_id."
+    if not actor_key:
+        return "Không xác định được khóa người dùng / nhóm."
 
-    current = USER_LANG_MAP.get(user_id, DEFAULT_AUTO_TARGET)
-    return f"Ngôn ngữ đích hiện tại của bạn = {current}"
+    current = USER_LANG_MAP.get(actor_key, DEFAULT_AUTO_TARGET)
+    return f"Ngôn ngữ đích hiện tại = {current}"
 
 
 def handle_translate_command(user_text: str) -> str:
@@ -309,12 +343,12 @@ def handle_translate_command(user_text: str) -> str:
     return ""
 
 
-def handle_auto_translate(user_id: str, user_text: str) -> str:
+def handle_auto_translate(actor_key: str, user_text: str) -> str:
     """
     Auto mode (chế độ tự động)
-    Không có lệnh -> dịch theo ngôn ngữ đích của user
+    Không có lệnh -> dịch theo ngôn ngữ đích đã lưu
     """
-    target_lang = USER_LANG_MAP.get(user_id, DEFAULT_AUTO_TARGET)
+    target_lang = USER_LANG_MAP.get(actor_key, DEFAULT_AUTO_TARGET)
 
     source_lang = detect_language(user_text)
     translated = translate_text(user_text, target_lang)
@@ -379,8 +413,8 @@ def webhook():
                 continue
 
             reply_token = event.get("replyToken")
-            user_id = ctx["user_id"]
             user_text = (ctx["text"] or "").strip()
+            actor_key = build_actor_key(ctx)
 
             if not reply_token:
                 print(f"[EVENT {idx}] missing_reply_token")
@@ -392,17 +426,19 @@ def webhook():
 
             print(f"[MESSAGE] source_type={ctx['source_type']}")
             print(f"[MESSAGE] group_id={ctx['group_id']}")
+            print(f"[MESSAGE] room_id={ctx['room_id']}")
             print(f"[MESSAGE] user_id={ctx['user_id']}")
+            print(f"[MESSAGE] actor_key={actor_key}")
             print(f"[MESSAGE] text={user_text}")
 
             # 1) /lang
-            result = handle_lang_command(user_id, user_text)
+            result = handle_lang_command(actor_key, user_text)
             if result:
                 reply_message(reply_token, result)
                 continue
 
             # 2) /mylang
-            result = handle_show_lang_command(user_id, user_text)
+            result = handle_show_lang_command(actor_key, user_text)
             if result:
                 reply_message(reply_token, result)
                 continue
@@ -414,7 +450,7 @@ def webhook():
                 continue
 
             # 4) auto translate
-            result = handle_auto_translate(user_id, user_text)
+            result = handle_auto_translate(actor_key, user_text)
             reply_message(reply_token, result)
 
         return "OK", 200
