@@ -1,5 +1,10 @@
 import os
 import json
+import hmac
+import base64
+import hashlib
+from html import unescape
+
 import requests
 from flask import Flask, request, jsonify
 
@@ -9,25 +14,66 @@ app = Flask(__name__)
 # ENVIRONMENT VARIABLES
 # =========================
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")  # giữ lại để dùng sau nếu cần
 
 # =========================
-# DEBUG LOGS
+# BOOT LOGS
 # =========================
 print("[BOOT] Starting LINE bot on Render...")
 print(f"[BOOT] LINE_CHANNEL_ACCESS_TOKEN exists: {bool(LINE_CHANNEL_ACCESS_TOKEN)}")
+print(f"[BOOT] LINE_CHANNEL_SECRET exists: {bool(LINE_CHANNEL_SECRET)}")
 print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
 print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
 
 
 # =========================
-# LINE REPLY
+# CONFIG
 # =========================
-def reply_message(reply_token: str, text: str) -> None:
+DEFAULT_AUTO_TARGET = "vi"
+SUPPORTED_COMMANDS = {
+    "/zh": "zh-TW",
+    "/vi": "vi",
+    "/id": "id",
+}
+
+
+# =========================
+# HELPERS
+# =========================
+def verify_line_signature(raw_body: str, signature: str) -> bool:
+    """
+    Verify LINE signature (xác thực chữ ký LINE)
+    """
+    if not LINE_CHANNEL_SECRET:
+        print("[SECURITY] Missing LINE_CHANNEL_SECRET")
+        return False
+
+    if not signature:
+        print("[SECURITY] Missing X-Line-Signature header")
+        return False
+
+    digest = hmac.new(
+        LINE_CHANNEL_SECRET.encode("utf-8"),
+        raw_body.encode("utf-8"),
+        hashlib.sha256
+    ).digest()
+
+    computed_signature = base64.b64encode(digest).decode("utf-8")
+    is_valid = hmac.compare_digest(computed_signature, signature)
+
+    print(f"[SECURITY] signature_valid={is_valid}")
+    return is_valid
+
+
+def reply_message(reply_token: str, text: str) -> bool:
+    """
+    Reply to LINE (phản hồi LINE)
+    """
     if not LINE_CHANNEL_ACCESS_TOKEN:
-        print("[ERROR] LINE_CHANNEL_ACCESS_TOKEN is missing")
-        return
+        print("[LINE REPLY ERROR] Missing LINE_CHANNEL_ACCESS_TOKEN")
+        return False
 
     url = "https://api.line.me/v2/bot/message/reply"
     headers = {
@@ -39,99 +85,171 @@ def reply_message(reply_token: str, text: str) -> None:
         "messages": [
             {
                 "type": "text",
-                "text": text
+                "text": text[:5000]  # guard chiều dài
             }
         ]
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
         print(f"[LINE REPLY] status={response.status_code}")
         print(f"[LINE REPLY] body={response.text}")
+
+        return response.status_code == 200
+
     except Exception as e:
-        print(f"[LINE REPLY ERROR] {e}")
+        print(f"[LINE REPLY ERROR] {str(e)}")
+        return False
 
 
-# =========================
-# GOOGLE TRANSLATE
-# =========================
+def detect_language(text: str) -> str:
+    """
+    Detect language (nhận diện ngôn ngữ) bằng Google Translate API detect
+    Trả về mã ngôn ngữ như: vi / zh-TW / zh-CN / id / en ...
+    """
+    if not GOOGLE_API_KEY:
+        print("[DETECT ERROR] Missing GOOGLE_API_KEY")
+        return "unknown"
+
+    url = "https://translation.googleapis.com/language/translate/v2/detect"
+    params = {"key": GOOGLE_API_KEY}
+    payload = {"q": text}
+
+    try:
+        response = requests.post(url, params=params, data=payload, timeout=20)
+        print(f"[DETECT] status={response.status_code}")
+        print(f"[DETECT] body={response.text}")
+
+        if response.status_code != 200:
+            return "unknown"
+
+        data = response.json()
+        detections = data.get("data", {}).get("detections", [])
+        if not detections or not detections[0]:
+            return "unknown"
+
+        lang = detections[0][0].get("language", "unknown")
+        return lang
+
+    except Exception as e:
+        print(f"[DETECT ERROR] {str(e)}")
+        return "unknown"
+
+
 def translate_text(text: str, target_lang: str) -> str:
+    """
+    Translate text (dịch văn bản)
+    """
     if not GOOGLE_API_KEY:
         return "[LỖI] Thiếu GOOGLE_API_KEY"
 
-    if not text.strip():
-        return "[LỖI] Nội dung trống"
-
     url = "https://translation.googleapis.com/language/translate/v2"
     params = {"key": GOOGLE_API_KEY}
-    data = {
+    payload = {
         "q": text,
         "target": target_lang,
         "format": "text",
     }
 
     try:
-        response = requests.post(url, params=params, data=data, timeout=20)
+        response = requests.post(url, params=params, data=payload, timeout=20)
         print(f"[TRANSLATE] status={response.status_code}")
         print(f"[TRANSLATE] body={response.text}")
 
         if response.status_code != 200:
             return f"[LỖI DỊCH] HTTP {response.status_code}"
 
-        result = response.json()
+        data = response.json()
         translated = (
-            result.get("data", {})
+            data.get("data", {})
             .get("translations", [{}])[0]
-            .get("translatedText", "")
+            .get("translatedText")
         )
 
         if not translated:
-            return "[LỖI DỊCH] Không có translatedText"
+            return "[LỖI DỊCH] Không có dữ liệu trả về"
 
-        return translated
+        return unescape(translated)
 
     except Exception as e:
-        print(f"[TRANSLATE ERROR] {e}")
+        print(f"[TRANSLATE ERROR] {str(e)}")
         return f"[LỖI DỊCH] {str(e)}"
 
 
-# =========================
-# COMMAND PARSER
-# =========================
+def detect_source_label(lang_code: str) -> str:
+    """
+    Map source label (gắn nhãn ngôn ngữ nguồn)
+    """
+    if lang_code.startswith("zh"):
+        return "ZH"
+    if lang_code == "vi":
+        return "VI"
+    if lang_code == "id":
+        return "ID"
+    if lang_code == "en":
+        return "EN"
+    if lang_code == "unknown":
+        return "AUTO"
+    return lang_code.upper()
+
+
 def handle_translate_command(user_text: str) -> str:
+    """
+    Command mode (chế độ lệnh):
+    /zh nội dung
+    /vi nội dung
+    /id nội dung
+    """
     text = user_text.strip()
+    if not text:
+        return ""
 
-    # /zh xin chào
-    if text.startswith("/zh"):
-        source_text = text.replace("/zh", "", 1).strip()
-        if not source_text:
-            return "Cú pháp đúng: /zh nội dung"
-        translated = translate_text(source_text, "zh-TW")
-        return f"[VI → ZH-TW]\n{translated}"
+    for cmd, target_lang in SUPPORTED_COMMANDS.items():
+        prefix = f"{cmd} "
+        if text.startswith(prefix):
+            source_text = text[len(prefix):].strip()
+            if not source_text:
+                return f"Cú pháp đúng: {cmd} nội dung"
 
-    # /vi 你好
-    if text.startswith("/vi"):
-        source_text = text.replace("/vi", "", 1).strip()
-        if not source_text:
-            return "Cú pháp đúng: /vi nội dung"
-        translated = translate_text(source_text, "vi")
-        return f"[ZH → VI]\n{translated}"
+            source_lang = detect_language(source_text)
+            translated = translate_text(source_text, target_lang)
+            source_label = detect_source_label(source_lang)
 
-    # /id chào bạn
-    if text.startswith("/id"):
-        source_text = text.replace("/id", "", 1).strip()
-        if not source_text:
-            return "Cú pháp đúng: /id nội dung"
-        translated = translate_text(source_text, "id")
-        return f"[VI → ID]\n{translated}"
+            return f"[{source_label} → {target_lang.upper()}]\n{translated}"
 
-    # =========================
-    # AUTO DETECT FALLBACK
-    # Nếu không có lệnh /zh /vi /id
-    # thì tự dịch sang tiếng Việt
-    # =========================
-    translated = translate_text(text, "vi")
-    return f"[AUTO → VI]\n{translated}"
+    return ""
+
+
+def handle_auto_translate(user_text: str) -> str:
+    """
+    Auto mode (chế độ tự động):
+    Không có lệnh -> dịch về DEFAULT_AUTO_TARGET
+    """
+    source_lang = detect_language(user_text)
+    translated = translate_text(user_text, DEFAULT_AUTO_TARGET)
+    source_label = detect_source_label(source_lang)
+
+    return f"[{source_label} → {DEFAULT_AUTO_TARGET.upper()}]\n{translated}"
+
+
+def extract_event_context(event: dict) -> dict:
+    """
+    Extract context (rút ngữ cảnh)
+    """
+    source = event.get("source", {}) or {}
+    message = event.get("message", {}) or {}
+
+    return {
+        "event_type": event.get("type"),
+        "reply_token_exists": bool(event.get("replyToken")),
+        "source_type": source.get("type"),
+        "user_id": source.get("userId"),
+        "group_id": source.get("groupId"),
+        "room_id": source.get("roomId"),
+        "message_type": message.get("type"),
+        "message_id": message.get("id"),
+        "text": message.get("text", ""),
+    }
 
 
 # =========================
@@ -147,58 +265,77 @@ def health():
     return jsonify({
         "status": "ok",
         "line_token_exists": bool(LINE_CHANNEL_ACCESS_TOKEN),
+        "line_secret_exists": bool(LINE_CHANNEL_SECRET),
         "google_api_key_exists": bool(GOOGLE_API_KEY),
         "google_sheet_id_exists": bool(GOOGLE_SHEET_ID),
+        "default_auto_target": DEFAULT_AUTO_TARGET,
     }), 200
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        body = request.get_json(silent=True)
-        print("[WEBHOOK] Incoming payload:")
+        raw_body = request.get_data(as_text=True)
+        signature = request.headers.get("X-Line-Signature", "")
+
+        print("[WEBHOOK RAW BODY]", raw_body)
+        print(f"[WEBHOOK HEADER] x_line_signature_exists={bool(signature)}")
+
+        # Production security check
+        if not verify_line_signature(raw_body, signature):
+            return "Invalid signature", 403
+
+        body = json.loads(raw_body)
+        print("[WEBHOOK PARSED]")
         print(json.dumps(body, ensure_ascii=False))
 
-        if not body:
-            return "No JSON body", 400
-
         events = body.get("events", [])
+        print(f"[WEBHOOK] events_count={len(events)}")
+
         if not events:
-            return "No events", 200
+            return "OK", 200
 
-        for event in events:
-            print(f"[EVENT] {json.dumps(event, ensure_ascii=False)}")
+        for idx, event in enumerate(events, start=1):
+            ctx = extract_event_context(event)
+            print(f"[EVENT {idx}] {json.dumps(ctx, ensure_ascii=False)}")
 
-            if event.get("type") != "message":
-                print("[SKIP] event type is not message")
+            if ctx["event_type"] != "message":
+                print(f"[EVENT {idx}] skip_non_message_event")
                 continue
 
-            message = event.get("message", {})
-            if message.get("type") != "text":
-                print("[SKIP] message type is not text")
+            if ctx["message_type"] != "text":
+                print(f"[EVENT {idx}] skip_non_text_message")
                 continue
 
             reply_token = event.get("replyToken")
-            user_text = message.get("text", "").strip()
-
-            print(f"[MESSAGE] user_text={user_text}")
+            user_text = (ctx["text"] or "").strip()
 
             if not reply_token:
-                print("[WARN] Missing replyToken")
+                print(f"[EVENT {idx}] missing_reply_token")
                 continue
 
             if not user_text:
                 reply_message(reply_token, "Tôi đã nhận được tin nhắn trống.")
                 continue
 
-            reply_text = handle_translate_command(user_text)
-            print(f"[FINAL REPLY] {reply_text}")
-            reply_message(reply_token, reply_text)
+            print(f"[MESSAGE] source_type={ctx['source_type']}")
+            print(f"[MESSAGE] group_id={ctx['group_id']}")
+            print(f"[MESSAGE] user_text={user_text}")
+
+            # ƯU TIÊN CHẾ ĐỘ LỆNH
+            command_result = handle_translate_command(user_text)
+            if command_result:
+                reply_message(reply_token, command_result)
+                continue
+
+            # AUTO TRANSLATE
+            auto_result = handle_auto_translate(user_text)
+            reply_message(reply_token, auto_result)
 
         return "OK", 200
 
     except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}")
+        print(f"[WEBHOOK ERROR] {str(e)}")
         return "Internal Server Error", 500
 
 
@@ -206,6 +343,6 @@ def webhook():
 # ENTRYPOINT
 # =========================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.getenv("PORT", "10000"))
     print(f"[BOOT] Running on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
