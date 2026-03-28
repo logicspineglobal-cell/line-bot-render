@@ -138,6 +138,18 @@ def translate_text(text, target_lang):
 
 
 # =====================================
+# TEXT CLEANER
+# =====================================
+def clean_input_text(text):
+    clean_text = (text or "").strip()
+
+    if "→" in clean_text:
+        clean_text = clean_text.split("→")[0].strip()
+
+    return clean_text
+
+
+# =====================================
 # LANGUAGE NORMALIZER
 # =====================================
 def normalize_target_lang(raw_lang):
@@ -198,9 +210,17 @@ def handle_normal_message(user_id, text, reply_token):
 
     print(f"[MESSAGE FLOW] actor_key={actor_key}")
     print(f"[MESSAGE FLOW] target_lang={target_lang}")
-    print(f"[MESSAGE FLOW] input_text={text}")
+    print(f"[MESSAGE FLOW] raw_input_text={text}")
 
-    translated = translate_text(text, target_lang)
+    clean_text = clean_input_text(text)
+    print(f"[MESSAGE FLOW] clean_input_text={clean_text}")
+
+    if not clean_text:
+        ok = reply_line_message(reply_token, "Tin nhắn rỗng sau khi làm sạch input.")
+        print(f"[REPLY DEBUG] reply_message CALLED empty_input result={ok}")
+        return
+
+    translated = translate_text(clean_text, target_lang)
 
     if translated is None:
         ok = reply_line_message(
@@ -210,7 +230,7 @@ def handle_normal_message(user_id, text, reply_token):
         print(f"[REPLY DEBUG] reply_message CALLED normal fallback result={ok}")
         return
 
-    output_text = f"[VI → {target_lang}]\n{translated}"
+    output_text = f"[AUTO → {target_lang}]\n{translated}"
     ok = reply_line_message(reply_token, output_text)
     print(f"[REPLY DEBUG] reply_message CALLED normal result={ok}")
 
