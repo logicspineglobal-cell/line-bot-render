@@ -1,4 +1,5 @@
 print("🔥🔥🔥 FILE line_webhook.py ĐANG CHẠY 🔥🔥🔥")
+
 import os
 import json
 import hmac
@@ -17,7 +18,7 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")  # giữ lại để dùng sau nếu cần
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
 # =========================
 # BOOT LOGS
@@ -37,10 +38,9 @@ SUPPORTED_COMMANDS = {
     "/zh": "zh-TW",
     "/vi": "vi",
     "/id": "id",
+    "/en": "en",
 }
 
-# In-memory map (bộ nhớ tạm)
-# restart service -> mất dữ liệu
 USER_LANG_MAP = {}
 
 
@@ -48,9 +48,6 @@ USER_LANG_MAP = {}
 # HELPERS
 # =========================
 def verify_line_signature(raw_body: str, signature: str) -> bool:
-    """
-    Verify LINE signature (xác thực chữ ký LINE)
-    """
     if not LINE_CHANNEL_SECRET:
         print("[SECURITY] Missing LINE_CHANNEL_SECRET")
         return False
@@ -73,9 +70,6 @@ def verify_line_signature(raw_body: str, signature: str) -> bool:
 
 
 def reply_message(reply_token: str, text: str) -> bool:
-    """
-    Reply message (phản hồi tin nhắn)
-    """
     if not LINE_CHANNEL_ACCESS_TOKEN:
         print("[LINE REPLY ERROR] Missing LINE_CHANNEL_ACCESS_TOKEN")
         return False
@@ -96,20 +90,17 @@ def reply_message(reply_token: str, text: str) -> bool:
     }
 
     try:
+        print(f"[LINE REPLY DEBUG] payload={json.dumps(payload, ensure_ascii=False)}")
         response = requests.post(url, headers=headers, json=payload, timeout=20)
         print(f"[LINE REPLY] status={response.status_code}")
         print(f"[LINE REPLY] body={response.text}")
         return response.status_code == 200
-
     except Exception as e:
         print(f"[LINE REPLY ERROR] {str(e)}")
         return False
 
 
 def detect_language(text: str) -> str:
-    """
-    Detect language (nhận diện ngôn ngữ)
-    """
     if not GOOGLE_API_KEY:
         print("[DETECT ERROR] Missing GOOGLE_API_KEY")
         return "unknown"
@@ -132,18 +123,13 @@ def detect_language(text: str) -> str:
         if not detections or not detections[0]:
             return "unknown"
 
-        lang = detections[0][0].get("language", "unknown")
-        return lang
-
+        return detections[0][0].get("language", "unknown")
     except Exception as e:
         print(f"[DETECT ERROR] {str(e)}")
         return "unknown"
 
 
 def translate_text(text: str, target_lang: str) -> str:
-    """
-    Translate text (dịch văn bản)
-    """
     if not GOOGLE_API_KEY:
         return "[LỖI] Thiếu GOOGLE_API_KEY"
 
@@ -174,16 +160,12 @@ def translate_text(text: str, target_lang: str) -> str:
             return "[LỖI DỊCH] Không có dữ liệu trả về"
 
         return unescape(translated)
-
     except Exception as e:
         print(f"[TRANSLATE ERROR] {str(e)}")
         return f"[LỖI DỊCH] {str(e)}"
 
 
 def detect_source_label(lang_code: str) -> str:
-    """
-    Map source language label (gắn nhãn ngôn ngữ nguồn)
-    """
     if not lang_code:
         return "AUTO"
 
@@ -204,9 +186,6 @@ def detect_source_label(lang_code: str) -> str:
 
 
 def normalize_target_lang(lang: str) -> str:
-    """
-    Normalize language code (chuẩn hóa mã ngôn ngữ)
-    """
     lang = (lang or "").strip()
 
     mapping = {
@@ -222,9 +201,6 @@ def normalize_target_lang(lang: str) -> str:
 
 
 def extract_event_context(event: dict) -> dict:
-    """
-    Extract event context (rút ngữ cảnh event)
-    """
     source = event.get("source", {}) or {}
     message = event.get("message", {}) or {}
 
@@ -242,13 +218,6 @@ def extract_event_context(event: dict) -> dict:
 
 
 def build_actor_key(ctx: dict) -> str:
-    """
-    Build actor key (tạo khóa định danh)
-    Ưu tiên:
-    1. user_id
-    2. group_id
-    3. room_id
-    """
     user_id = ctx.get("user_id")
     group_id = ctx.get("group_id")
     room_id = ctx.get("room_id")
@@ -264,12 +233,6 @@ def build_actor_key(ctx: dict) -> str:
 
 
 def handle_lang_command(actor_key: str, user_text: str) -> str:
-    """
-    /lang vi
-    /lang zh
-    /lang id
-    /lang en
-    """
     text = (user_text or "").strip()
     parts = text.split()
 
@@ -302,10 +265,8 @@ def handle_lang_command(actor_key: str, user_text: str) -> str:
 
 
 def handle_show_lang_command(actor_key: str, user_text: str) -> str:
-    """
-    /mylang
-    """
     text = (user_text or "").strip().lower()
+
     if text != "/mylang":
         return ""
 
@@ -317,13 +278,8 @@ def handle_show_lang_command(actor_key: str, user_text: str) -> str:
 
 
 def handle_translate_command(user_text: str) -> str:
-    """
-    Command mode (chế độ lệnh)
-    /zh xin chào
-    /vi 你好
-    /id chào bạn
-    """
     text = (user_text or "").strip()
+
     if not text:
         return ""
 
@@ -345,10 +301,6 @@ def handle_translate_command(user_text: str) -> str:
 
 
 def handle_auto_translate(actor_key: str, user_text: str) -> str:
-    """
-    Auto mode (chế độ tự động)
-    Không có lệnh -> dịch theo ngôn ngữ đích đã lưu
-    """
     target_lang = USER_LANG_MAP.get(actor_key, DEFAULT_AUTO_TARGET)
 
     source_lang = detect_language(user_text)
@@ -422,6 +374,7 @@ def webhook():
                 continue
 
             if not user_text:
+                print("[REPLY DEBUG] empty_text_reply")
                 reply_message(reply_token, "Tôi đã nhận được tin nhắn trống.")
                 continue
 
@@ -432,27 +385,31 @@ def webhook():
             print(f"[MESSAGE] actor_key={actor_key}")
             print(f"[MESSAGE] text={user_text}")
 
-            # 1) /lang
             result = handle_lang_command(actor_key, user_text)
             if result:
-                reply_message(reply_token, result)
+                print(f"[REPLY DEBUG] about to reply from /lang: {result}")
+                reply_ok = reply_message(reply_token, result)
+                print(f"[REPLY DEBUG] reply_message CALLED /lang result={reply_ok}")
                 continue
 
-            # 2) /mylang
             result = handle_show_lang_command(actor_key, user_text)
             if result:
-                reply_message(reply_token, result)
+                print(f"[REPLY DEBUG] about to reply from /mylang: {result}")
+                reply_ok = reply_message(reply_token, result)
+                print(f"[REPLY DEBUG] reply_message CALLED /mylang result={reply_ok}")
                 continue
 
-            # 3) command translate
             result = handle_translate_command(user_text)
             if result:
-                reply_message(reply_token, result)
+                print(f"[REPLY DEBUG] about to reply from command translate: {result}")
+                reply_ok = reply_message(reply_token, result)
+                print(f"[REPLY DEBUG] reply_message CALLED command_translate result={reply_ok}")
                 continue
 
-            # 4) auto translate
             result = handle_auto_translate(actor_key, user_text)
-            reply_message(reply_token, result)
+            print(f"[REPLY DEBUG] about to reply from auto translate: {result}")
+            reply_ok = reply_message(reply_token, result)
+            print(f"[REPLY DEBUG] reply_message CALLED auto_translate result={reply_ok}")
 
         return "OK", 200
 
