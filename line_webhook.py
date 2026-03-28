@@ -20,7 +20,7 @@ LINE_CHANNEL_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip
 LINE_CHANNEL_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or "").strip()
 GOOGLE_API_KEY = (os.getenv("GOOGLE_API_KEY") or "").strip()
 GOOGLE_SHEET_ID = (os.getenv("GOOGLE_SHEET_ID") or "").strip()
-GOOGLE_SERVICE_ACCOUNT_JSON = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
+GOOGLE_CREDENTIALS_JSON = (os.getenv("GOOGLE_CREDENTIALS_JSON") or "").strip()
 
 # =========================================================
 # CONSTANTS
@@ -39,10 +39,11 @@ print(f"[BOOT] LINE_CHANNEL_ACCESS_TOKEN exists: {bool(LINE_CHANNEL_ACCESS_TOKEN
 print(f"[BOOT] LINE_CHANNEL_SECRET exists: {bool(LINE_CHANNEL_SECRET)}")
 print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
 print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
-print(f"[BOOT] GOOGLE_SERVICE_ACCOUNT_JSON exists: {bool(GOOGLE_SERVICE_ACCOUNT_JSON)}")
+print(f"[BOOT] GOOGLE_CREDENTIALS_JSON exists: {bool(GOOGLE_CREDENTIALS_JSON)}")
+
 
 # =========================================================
-# HEALTH CHECK
+# ROOT
 # =========================================================
 @app.route("/", methods=["GET"])
 def home():
@@ -145,15 +146,15 @@ def reply_line_message(reply_token: str, text: str) -> bool:
 
 
 # =========================================================
-# GOOGLE SHEET
+# GOOGLE SHEET AUTH
 # =========================================================
 def get_gspread_client():
-    if not GOOGLE_SERVICE_ACCOUNT_JSON:
-        print("[SHEET] GOOGLE_SERVICE_ACCOUNT_JSON missing")
+    if not GOOGLE_CREDENTIALS_JSON:
+        print("[SHEET] GOOGLE_CREDENTIALS_JSON missing")
         return None
 
     try:
-        credentials_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
 
         scope = [
             "https://spreadsheets.google.com/feeds",
@@ -214,6 +215,9 @@ def get_translation_log_worksheet():
         return None
 
 
+# =========================================================
+# USER LANGUAGE STORE
+# =========================================================
 def get_user_target_lang(user_id: str, default_lang: str = "en") -> str:
     worksheet = get_user_lang_worksheet()
     if worksheet is None:
@@ -222,6 +226,7 @@ def get_user_target_lang(user_id: str, default_lang: str = "en") -> str:
 
     try:
         records = worksheet.get_all_records()
+
         for row in records:
             row_user_id = str(row.get("user_id", "")).strip()
             if row_user_id == user_id:
@@ -277,6 +282,9 @@ def save_user_target_lang(user_id: str, target_lang: str) -> bool:
         return False
 
 
+# =========================================================
+# TRANSLATION LOG
+# =========================================================
 def log_translation_event(
     user_id: str,
     source_type: str,
@@ -352,8 +360,37 @@ def translate_text(text: str, target_lang: str):
 
 
 # =========================================================
-# COMMAND HANDLERS
+# COMMAND HANDLER
 # =========================================================
+def handle_short_command(user_id: str, text: str, reply_token: str) -> bool:
+    command = (text or "").strip().lower()
+
+    command_map = {
+        "/zh": "zh-TW",
+        "/en": "en",
+        "/vi": "vi"
+    }
+
+    if command not in command_map:
+        return False
+
+    target_lang = command_map[command]
+    saved = save_user_target_lang(user_id, target_lang)
+    print(f"[COMMAND] command={command} target_lang={target_lang} saved={saved}")
+
+    if not saved:
+        ok = reply_line_message(
+            reply_token,
+            "Lưu ngôn ngữ thất bại. Kiểm tra kết nối Google Sheet."
+        )
+        print(f"[REPLY DEBUG] short command save failed result={ok}")
+        return True
+
+    ok = reply_line_message(reply_token, f"Đã lưu ngôn ngữ đích = {target_lang}")
+    print(f"[REPLY DEBUG] short command success result={ok}")
+    return True
+
+
 def handle_lang_command(user_id: str, text: str, reply_token: str):
     print(f"[LANG CMD] raw_text={text}")
 
@@ -388,6 +425,9 @@ def handle_lang_command(user_id: str, text: str, reply_token: str):
     print(f"[REPLY DEBUG] /lang success result={ok}")
 
 
+# =========================================================
+# NORMAL MESSAGE HANDLER
+# =========================================================
 def handle_normal_message(
     user_id: str,
     text: str,
@@ -501,17 +541,24 @@ def webhook():
         print(f"[MESSAGE] user_id={user_id}")
         print(f"[MESSAGE] text={text}")
 
+        # 1) short command: /zh /en /vi
+        if handle_short_command(user_id, text, reply_token):
+            continue
+
+        # 2) full command: /lang zh
         if text.startswith("/lang"):
             handle_lang_command(user_id, text, reply_token)
-        else:
-            handle_normal_message(
-                user_id=user_id,
-                text=text,
-                reply_token=reply_token,
-                source_type=source_type,
-                group_id=group_id,
-                room_id=room_id
-            )
+            continue
+
+        # 3) normal message
+        handle_normal_message(
+            user_id=user_id,
+            text=text,
+            reply_token=reply_token,
+            source_type=source_type,
+            group_id=group_id,
+            room_id=room_id
+        )
 
     return jsonify({"ok": True}), 200
 
