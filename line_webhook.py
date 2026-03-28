@@ -28,6 +28,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").s
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 GOOGLE_TRANSLATE_URL = "https://translation.googleapis.com/language/translate/v2"
 USER_LANG_SHEET_NAME = "USER_LANG_MAP"
+TRANSLATION_LOG_SHEET_NAME = "TRANSLATION_LOG"
 
 # =========================================================
 # BOOT LOGS
@@ -40,13 +41,47 @@ print(f"[BOOT] GOOGLE_API_KEY exists: {bool(GOOGLE_API_KEY)}")
 print(f"[BOOT] GOOGLE_SHEET_ID exists: {bool(GOOGLE_SHEET_ID)}")
 print(f"[BOOT] GOOGLE_SERVICE_ACCOUNT_JSON exists: {bool(GOOGLE_SERVICE_ACCOUNT_JSON)}")
 
-
 # =========================================================
 # HEALTH CHECK
 # =========================================================
 @app.route("/", methods=["GET"])
 def home():
     return "LINE webhook is live", 200
+
+
+# =========================================================
+# UTILS
+# =========================================================
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def clean_input_text(text: str) -> str:
+    clean_text = (text or "").strip()
+
+    if "→" in clean_text:
+        clean_text = clean_text.split("→")[0].strip()
+
+    return clean_text
+
+
+def normalize_target_lang(raw_lang: str):
+    lang = (raw_lang or "").strip().lower()
+
+    mapping = {
+        "zh": "zh-TW",
+        "zh-tw": "zh-TW",
+        "tw": "zh-TW",
+        "en": "en",
+        "vi": "vi",
+        "ja": "ja",
+        "jp": "ja",
+        "ko": "ko",
+        "th": "th",
+        "id": "id"
+    }
+
+    return mapping.get(lang)
 
 
 # =========================================================
@@ -110,7 +145,7 @@ def reply_line_message(reply_token: str, text: str) -> bool:
 
 
 # =========================================================
-# GOOGLE SHEET CONNECTION
+# GOOGLE SHEET
 # =========================================================
 def get_gspread_client():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -139,7 +174,7 @@ def get_gspread_client():
         return None
 
 
-def get_user_lang_worksheet():
+def get_spreadsheet():
     if not GOOGLE_SHEET_ID:
         print("[SHEET] GOOGLE_SHEET_ID missing")
         return None
@@ -149,16 +184,34 @@ def get_user_lang_worksheet():
         return None
 
     try:
-        spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
-        worksheet = spreadsheet.worksheet(USER_LANG_SHEET_NAME)
-        return worksheet
+        return client.open_by_key(GOOGLE_SHEET_ID)
     except Exception as exc:
-        print(f"[SHEET ERROR] open worksheet failed: {str(exc)}")
+        print(f"[SHEET ERROR] open spreadsheet failed: {str(exc)}")
         return None
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def get_user_lang_worksheet():
+    spreadsheet = get_spreadsheet()
+    if spreadsheet is None:
+        return None
+
+    try:
+        return spreadsheet.worksheet(USER_LANG_SHEET_NAME)
+    except Exception as exc:
+        print(f"[SHEET ERROR] open USER_LANG_MAP failed: {str(exc)}")
+        return None
+
+
+def get_translation_log_worksheet():
+    spreadsheet = get_spreadsheet()
+    if spreadsheet is None:
+        return None
+
+    try:
+        return spreadsheet.worksheet(TRANSLATION_LOG_SHEET_NAME)
+    except Exception as exc:
+        print(f"[SHEET ERROR] open TRANSLATION_LOG failed: {str(exc)}")
+        return None
 
 
 def get_user_target_lang(user_id: str, default_lang: str = "en") -> str:
@@ -195,6 +248,7 @@ def save_user_target_lang(user_id: str, target_lang: str) -> bool:
 
         if not values:
             worksheet.append_row(["user_id", "target_lang", "updated_at"])
+            values = worksheet.get_all_values()
 
         found_row_index = None
 
@@ -220,6 +274,37 @@ def save_user_target_lang(user_id: str, target_lang: str) -> bool:
 
     except Exception as exc:
         print(f"[SHEET ERROR] save_user_target_lang failed: {str(exc)}")
+        return False
+
+
+def log_translation_event(
+    user_id: str,
+    source_type: str,
+    group_id: str,
+    room_id: str,
+    target_lang: str,
+    input_text: str
+) -> bool:
+    worksheet = get_translation_log_worksheet()
+    if worksheet is None:
+        print("[LOG] TRANSLATION_LOG unavailable")
+        return False
+
+    try:
+        worksheet.append_row([
+            now_iso(),
+            user_id or "",
+            source_type or "",
+            group_id or "",
+            room_id or "",
+            target_lang or "",
+            input_text or ""
+        ])
+        print(f"[LOG] saved user_id={user_id} source_type={source_type} group_id={group_id} room_id={room_id}")
+        return True
+
+    except Exception as exc:
+        print(f"[LOG ERROR] {str(exc)}")
         return False
 
 
@@ -267,37 +352,6 @@ def translate_text(text: str, target_lang: str):
 
 
 # =========================================================
-# HELPERS
-# =========================================================
-def clean_input_text(text: str) -> str:
-    clean_text = (text or "").strip()
-
-    if "→" in clean_text:
-        clean_text = clean_text.split("→")[0].strip()
-
-    return clean_text
-
-
-def normalize_target_lang(raw_lang: str):
-    lang = (raw_lang or "").strip().lower()
-
-    mapping = {
-        "zh": "zh-TW",
-        "zh-tw": "zh-TW",
-        "tw": "zh-TW",
-        "en": "en",
-        "vi": "vi",
-        "ja": "ja",
-        "jp": "ja",
-        "ko": "ko",
-        "th": "th",
-        "id": "id"
-    }
-
-    return mapping.get(lang)
-
-
-# =========================================================
 # COMMAND HANDLERS
 # =========================================================
 def handle_lang_command(user_id: str, text: str, reply_token: str):
@@ -334,7 +388,14 @@ def handle_lang_command(user_id: str, text: str, reply_token: str):
     print(f"[REPLY DEBUG] /lang success result={ok}")
 
 
-def handle_normal_message(user_id: str, text: str, reply_token: str):
+def handle_normal_message(
+    user_id: str,
+    text: str,
+    reply_token: str,
+    source_type: str,
+    group_id: str,
+    room_id: str
+):
     print(f"[MESSAGE FLOW] raw_input_text={text}")
 
     clean_text = clean_input_text(text)
@@ -357,6 +418,16 @@ def handle_normal_message(user_id: str, text: str, reply_token: str):
         )
         print(f"[REPLY DEBUG] translate failed result={ok}")
         return
+
+    log_saved = log_translation_event(
+        user_id=user_id,
+        source_type=source_type,
+        group_id=group_id,
+        room_id=room_id,
+        target_lang=target_lang,
+        input_text=clean_text
+    )
+    print(f"[LOG] translation_log_saved={log_saved}")
 
     output_text = f"[AUTO → {target_lang}]\n{translated}"
     ok = reply_line_message(reply_token, output_text)
@@ -433,7 +504,14 @@ def webhook():
         if text.startswith("/lang"):
             handle_lang_command(user_id, text, reply_token)
         else:
-            handle_normal_message(user_id, text, reply_token)
+            handle_normal_message(
+                user_id=user_id,
+                text=text,
+                reply_token=reply_token,
+                source_type=source_type,
+                group_id=group_id,
+                room_id=room_id
+            )
 
     return jsonify({"ok": True}), 200
 
